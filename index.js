@@ -1,107 +1,216 @@
-// index.js — Render-Ready Roaming Bot
+// index.js — The Nomad Pro Bot (Sleeps, Builds, Fights, Organizes)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const pvp = require('mineflayer-pvp').plugin;
+const toolPlugin = require('mineflayer-tool').plugin;
 const mcdataPkg = require('minecraft-data');
 
-// --- 1. Web Server for Render (Keep-Alive) ---
+// --- 1. Render Keep-Alive Server ---
 const app = express();
-const PORT = process.env.PORT || 3000; // Render sets this automatically
+const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('ProBot Nomad Mode: Online'));
+app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}`));
 
-app.get('/', (req, res) => {
-    const uptime = formatUptime(Date.now() - startTime);
-    res.send(`Bot is online. Uptime: ${uptime}`);
-});
-
-app.listen(PORT, () => {
-    console.log(`[WEB] Web server running on port ${PORT}`);
-});
-
-// --- 2. Bot Configuration ---
+// --- 2. Config ---
 const config = {
     host: process.env.SERVER_HOST || 'REALV4NSH.aternos.me',
     port: parseInt(process.env.SERVER_PORT || '53024', 10),
-    username: process.env.BOT_USERNAME || 'AFKBot123',
+    username: process.env.BOT_USERNAME || 'NomadBot',
     auth: process.env.BOT_AUTH || 'offline',
-    announceInterval: 30 * 60 * 1000, 
-    moveInterval: 10000 
 };
 
 // --- 3. Global State ---
 let bot = null;
-let logicLoop = null;
-let reconnectDelay = 5000;
 let isStarting = false;
-const maxBackoff = 300000; 
-const startTime = Date.now(); 
+let brainInterval = null;
+let lastBedPosition = null; // Remembers where we placed the bed to break it later
 
-// --- 4. Utility Functions ---
-const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const jitter = (ms) => ms + randInt(-Math.floor(ms * 0.2), Math.floor(ms * 0.2));
+// --- 4. The Brain ---
+function startBrain() {
+    stopBrain();
+    brainInterval = setInterval(async () => {
+        if (!bot || !bot.entity || isStarting) return;
+        
+        // A. Critical States
+        if (bot.isSleeping) return; 
+        if (bot.pvp.target) return; 
+        if (bot.pathfinder.isMoving() && Math.random() > 0.2) return; 
 
-function formatUptime(ms) {
-    const seconds = Math.floor((ms / 1000) % 60);
-    const minutes = Math.floor((ms / (1000 * 60)) % 60);
-    const hours = Math.floor((ms / (1000 * 60 * 60)));
-    return `${hours}h ${minutes}m ${seconds}s`;
-}
-
-// --- 5. The Brain ---
-function startLogicLoop() {
-    stopLogicLoop();
-    
-    logicLoop = setInterval(() => {
-        if (!bot || !bot.entity) return;
-        if (bot.pathfinder.isMoving()) return;
-
-        if (Math.random() > 0.5) {
-            wander();
-        } else {
-            lookAround();
+        // B. Night Time Logic (The Nomad Logic)
+        if (!bot.time.isDay && !bot.isSleeping) {
+            console.log('[BRAIN] Night detected. Initiating sleep protocol...');
+            await handleSleep();
+            return;
         }
-    }, config.moveInterval);
+
+        // C. Random Actions
+        const nearbyMobs = getHostileMobs();
+        const nearbyLoot = getNearbyLoot();
+        const chance = Math.random();
+
+        // 1. Combat
+        if (nearbyMobs.length > 0 && chance < 0.7) {
+            bot.pvp.attack(nearbyMobs[0]);
+            return;
+        }
+
+        // 2. Looting
+        if (nearbyLoot && chance < 0.9) {
+            bot.pathfinder.setGoal(new goals.GoalBlock(nearbyLoot.position.x, nearbyLoot.position.y, nearbyLoot.position.z));
+            return;
+        }
+
+        // 3. Inventory Sort
+        if (chance < 0.05) {
+            await randomInventoryShuffle();
+            return;
+        }
+
+        // 4. Random Building/Mining
+        if (chance < 0.15) {
+            if (Math.random() > 0.5) await randomBuild();
+            else await randomDig();
+            return;
+        }
+
+        // 5. Wander
+        wander();
+
+    }, 3000); 
 }
 
-function stopLogicLoop() {
-    if (logicLoop) clearInterval(logicLoop);
-    logicLoop = null;
+function stopBrain() {
+    if (brainInterval) clearInterval(brainInterval);
 }
 
-// --- 6. Actions ---
-function safeChat(msg) {
-    if (!bot) return;
-    bot.chat(msg);
-    console.log(`[BOT-CHAT] ${msg}`);
+// --- 5. Sleep & Bed Logic (New Feature) ---
+
+async function handleSleep() {
+    // 1. Look for existing bed
+    let bedBlock = bot.findBlock({ matching: bl => bot.isABed(bl), maxDistance: 32 });
+    
+    // 2. If no bed, try to place one from inventory
+    if (!bedBlock) {
+        const bedItem = bot.inventory.items().find(item => item.name.includes('bed'));
+        if (bedItem) {
+            console.log('[SLEEP] No bed found. Attempting to place one...');
+            bedBlock = await placeBed(bedItem);
+        } else {
+            console.log('[SLEEP] No bed in world AND no bed in inventory. Staying awake.');
+        }
+    }
+
+    // 3. Go to sleep
+    if (bedBlock) {
+        try {
+            await bot.pathfinder.goto(new goals.GoalBlock(bedBlock.position.x, bedBlock.position.y, bedBlock.position.z));
+            await bot.sleep(bedBlock);
+            bot.chat("Goodnight! (Sleeping in " + (lastBedPosition ? "my bed" : "found bed") + ")");
+        } catch (e) {
+            console.log(`[SLEEP] Failed: ${e.message}`);
+        }
+    }
 }
 
-function lookAround() {
-    if (!bot || !bot.entity) return;
-    const yaw = (Math.random() * Math.PI * 2) - Math.PI; 
-    const pitch = (Math.random() * Math.PI / 2) - (Math.PI / 4);
-    bot.look(yaw, pitch).catch(() => {});
+async function placeBed(bedItem) {
+    // Find a solid block to place the bed on
+    // Bed needs 2 blocks of space. We look for a solid block that has air above it.
+    const location = bot.findBlock({
+        matching: bl => bl.type !== 0, // Not air
+        useExtraInfo: (bl) => {
+            const above = bot.blockAt(bl.position.offset(0, 1, 0));
+            const side = bot.blockAt(bl.position.offset(1, 0, 0)); // Simply checking +X direction for space
+            const sideAbove = bot.blockAt(bl.position.offset(1, 1, 0));
+            
+            // Needs air above current block, and air at the "foot" of the bed
+            return above && above.name === 'air' && side && side.type !== 0 && sideAbove && sideAbove.name === 'air';
+        },
+        maxDistance: 5
+    });
+
+    if (!location) {
+        console.log('[SLEEP] Could not find flat ground to place bed.');
+        return null;
+    }
+
+    try {
+        await bot.equip(bedItem, 'hand');
+        await bot.lookAt(location.position); // Look at ground
+        // Place bed on the block
+        await bot.placeBlock(location, { x: 0, y: 1, z: 0 });
+        
+        // Return the new bed block (it's at location.y + 1)
+        lastBedPosition = location.position.offset(0, 1, 0); // Remember to break it later
+        return bot.blockAt(lastBedPosition);
+    } catch (e) {
+        console.log('[SLEEP] Failed to place bed:', e.message);
+        return null;
+    }
+}
+
+// --- 6. Other Actions ---
+
+async function randomInventoryShuffle() {
+    bot.look(bot.entity.yaw, -1.5); // Look down
+    const items = bot.inventory.items();
+    if (items.length < 2) return;
+    const slotA = items[Math.floor(Math.random() * items.length)].slot;
+    const slotB = Math.floor(Math.random() * 36); 
+    try { await bot.moveSlotItem(slotA, slotB); } catch(e) {}
+    setTimeout(() => bot.look(bot.entity.yaw, 0), 1500);
+}
+
+async function randomBuild() {
+    const buildingBlock = bot.inventory.items().find(item => 
+        ['dirt', 'cobblestone', 'planks', 'stone'].some(name => item.name.includes(name))
+    );
+    if (!buildingBlock) return; 
+
+    const referenceBlock = bot.findBlock({ matching: bl => bl.name !== 'air', maxDistance: 3 });
+    if (referenceBlock) {
+        try {
+            await bot.equip(buildingBlock, 'hand');
+            await bot.placeBlock(referenceBlock, { x: 0, y: 1, z: 0 });
+        } catch (e) {}
+    }
+}
+
+async function randomDig() {
+    const block = bot.findBlock({ matching: bl => bl.name !== 'air' && bl.name !== 'bedrock', maxDistance: 3 });
+    if (block) {
+        try {
+            await bot.tool.equipForBlock(block); 
+            await bot.dig(block);
+        } catch (e) {}
+    }
+}
+
+function getHostileMobs() {
+    return bot.nearestEntity(e => e.type === 'mob' && ['zombie', 'skeleton', 'spider', 'creeper'].includes(e.name));
+}
+
+function getNearbyLoot() {
+    return bot.nearestEntity(e => e.type === 'object');
 }
 
 function wander() {
-    if (!bot || !bot.entity) return;
-    
-    const Distance = 20;
-    const origin = bot.entity.position;
-    const x = origin.x + randInt(-Distance, Distance);
-    const z = origin.z + randInt(-Distance, Distance);
-    const goal = new goals.GoalNear(x, origin.y, z, 1);
-    
-    try {
-        bot.pathfinder.setGoal(goal);
-    } catch (e) {}
+    const r = 10 + Math.floor(Math.random() * 20);
+    const pos = bot.entity.position.offset((Math.random() - 0.5) * r, 0, (Math.random() - 0.5) * r);
+    bot.settings.sprint = Math.random() < 0.6;
+    if (Math.random() < 0.3) bot.setControlState('jump', true);
+    setTimeout(() => bot.setControlState('jump', false), 500);
+    const goal = new goals.GoalNear(pos.x, pos.y, pos.z, 1);
+    try { bot.pathfinder.setGoal(goal); } catch(e) {}
 }
 
-// --- 7. Bot Lifecycle ---
+// --- 7. Lifecycle ---
+
 function startBot() {
     if (isStarting) return;
     isStarting = true;
-
-    console.log(`[INIT] Connecting to ${config.host}:${config.port}...`);
+    console.log(`[INIT] Connecting to ${config.host}...`);
 
     try {
         bot = mineflayer.createBot({
@@ -111,85 +220,60 @@ function startBot() {
             auth: config.auth
         });
     } catch (e) {
-        console.error('[ERROR] CreateBot failed:', e);
-        handleDisconnect('create_error');
+        reconnect();
         return;
     }
 
     bot.loadPlugin(pathfinder);
+    bot.loadPlugin(pvp);
+    bot.loadPlugin(toolPlugin);
 
     bot.once('spawn', () => {
-        console.log('[SPAWN] Bot connected.');
-        reconnectDelay = 5000; 
+        console.log('[SPAWN] Bot online.');
         isStarting = false;
-
-        const mcData = mcdataPkg(bot.version);
-        const defaultMovements = new Movements(bot, mcData);
-        defaultMovements.canDig = false; 
-        defaultMovements.allow1by1towers = false; 
-        bot.pathfinder.setMovements(defaultMovements);
-
-        startLogicLoop();
         
-        // Announce uptime occasionally
-        setInterval(() => {
-             const up = formatUptime(Date.now() - startTime);
-             safeChat(`I am still here! Uptime: ${up}`);
-        }, config.announceInterval);
+        const mcData = mcdataPkg(bot.version);
+        const moves = new Movements(bot, mcData);
+        moves.canDig = true;
+        moves.canOpenDoors = true;
+        bot.pathfinder.setMovements(moves);
+        
+        startBrain();
     });
 
-    bot.on('chat', (username, message) => {
-        if (username === bot.username) return;
-        console.log(`[CHAT] <${username}> ${message}`);
+    // WAKE UP EVENT: Pack up the bed!
+    bot.on('wake', async () => {
+        console.log('[EVENT] Woke up.');
+        bot.chat('Morning!');
 
-        const msg = message.toLowerCase();
-        if (msg.includes('status') || msg.includes('uptime')) {
-            const up = formatUptime(Date.now() - startTime);
-            const pos = bot.entity.position;
-            safeChat(`Running for: ${up} | Pos: ${Math.round(pos.x)}, ${Math.round(pos.z)}`);
-        }
-        if (msg.includes('come here') || msg.includes('follow')) {
-            const player = bot.players[username];
-            if (player && player.entity) {
-                safeChat(`Coming to ${username}...`);
-                bot.pathfinder.setGoal(new goals.GoalFollow(player.entity, 1), true);
+        // If we placed a bed, let's break it to take it with us
+        if (lastBedPosition) {
+            const bedBlock = bot.blockAt(lastBedPosition);
+            if (bedBlock && bot.isABed(bedBlock)) {
+                console.log('[ACTION] Packing up bed...');
+                try {
+                    await bot.tool.equipForBlock(bedBlock);
+                    await bot.dig(bedBlock);
+                    lastBedPosition = null; // Forget it
+                } catch (e) {
+                    console.log('[ERROR] Could not pack bed:', e.message);
+                }
             }
         }
     });
 
-    bot.on('kicked', (reason) => {
-        const r = JSON.stringify(reason);
-        console.log(`[KICKED] ${r}`);
-        handleDisconnect(r.includes('throttle') ? 'throttle' : 'kicked');
-    });
-
-    bot.on('error', (err) => {
-        console.log(`[ERROR] ${err.message}`);
-        if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
-            handleDisconnect('timeout');
-        }
-    });
-    
+    bot.on('kicked', console.log);
+    bot.on('error', console.log);
     bot.on('end', () => {
         console.log('[END] Disconnected.');
-        handleDisconnect('end');
+        reconnect();
     });
 }
 
-function handleDisconnect(reason) {
-    stopLogicLoop();
+function reconnect() {
+    stopBrain();
     isStarting = false;
-    if (bot) {
-        bot.removeAllListeners();
-        bot = null;
-    }
-
-    if (reason === 'throttle') reconnectDelay = Math.max(reconnectDelay * 2, 60000);
-    else reconnectDelay = Math.min(Math.floor(reconnectDelay * 1.5), maxBackoff);
-
-    const wait = jitter(reconnectDelay);
-    console.log(`[RETRY] Reconnecting in ${Math.round(wait / 1000)}s...`);
-    setTimeout(startBot, wait);
+    setTimeout(startBot, 10000);
 }
 
 startBot();
