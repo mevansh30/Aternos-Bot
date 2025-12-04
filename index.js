@@ -1,4 +1,4 @@
-// index.js — The Nomad Pro Bot (Sleeps, Builds, Fights, Organizes)
+// index.js — Fixed Nomad Pro Bot (Crash Free)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -25,7 +25,7 @@ const config = {
 let bot = null;
 let isStarting = false;
 let brainInterval = null;
-let lastBedPosition = null; // Remembers where we placed the bed to break it later
+let lastBedPosition = null; 
 
 // --- 4. The Brain ---
 function startBrain() {
@@ -46,13 +46,14 @@ function startBrain() {
         }
 
         // C. Random Actions
-        const nearbyMobs = getHostileMobs();
+        const nearbyMob = getHostileMob(); // Returns single entity or null
         const nearbyLoot = getNearbyLoot();
         const chance = Math.random();
 
-        // 1. Combat
-        if (nearbyMobs.length > 0 && chance < 0.7) {
-            bot.pvp.attack(nearbyMobs[0]);
+        // 1. Combat (Fixed Null Check)
+        if (nearbyMob && chance < 0.7) {
+            console.log(`[COMBAT] Attacking ${nearbyMob.name}`);
+            bot.pvp.attack(nearbyMob);
             return;
         }
 
@@ -85,7 +86,7 @@ function stopBrain() {
     if (brainInterval) clearInterval(brainInterval);
 }
 
-// --- 5. Sleep & Bed Logic (New Feature) ---
+// --- 5. Sleep & Bed Logic ---
 
 async function handleSleep() {
     // 1. Look for existing bed
@@ -115,16 +116,12 @@ async function handleSleep() {
 }
 
 async function placeBed(bedItem) {
-    // Find a solid block to place the bed on
-    // Bed needs 2 blocks of space. We look for a solid block that has air above it.
     const location = bot.findBlock({
-        matching: bl => bl.type !== 0, // Not air
+        matching: bl => bl.type !== 0, 
         useExtraInfo: (bl) => {
             const above = bot.blockAt(bl.position.offset(0, 1, 0));
-            const side = bot.blockAt(bl.position.offset(1, 0, 0)); // Simply checking +X direction for space
+            const side = bot.blockAt(bl.position.offset(1, 0, 0)); 
             const sideAbove = bot.blockAt(bl.position.offset(1, 1, 0));
-            
-            // Needs air above current block, and air at the "foot" of the bed
             return above && above.name === 'air' && side && side.type !== 0 && sideAbove && sideAbove.name === 'air';
         },
         maxDistance: 5
@@ -137,12 +134,9 @@ async function placeBed(bedItem) {
 
     try {
         await bot.equip(bedItem, 'hand');
-        await bot.lookAt(location.position); // Look at ground
-        // Place bed on the block
+        await bot.lookAt(location.position); 
         await bot.placeBlock(location, { x: 0, y: 1, z: 0 });
-        
-        // Return the new bed block (it's at location.y + 1)
-        lastBedPosition = location.position.offset(0, 1, 0); // Remember to break it later
+        lastBedPosition = location.position.offset(0, 1, 0); 
         return bot.blockAt(lastBedPosition);
     } catch (e) {
         console.log('[SLEEP] Failed to place bed:', e.message);
@@ -187,7 +181,8 @@ async function randomDig() {
     }
 }
 
-function getHostileMobs() {
+// FIXED: Renamed to singular to reflect that it returns ONE entity
+function getHostileMob() {
     return bot.nearestEntity(e => e.type === 'mob' && ['zombie', 'skeleton', 'spider', 'creeper'].includes(e.name));
 }
 
@@ -241,23 +236,17 @@ function startBot() {
         startBrain();
     });
 
-    // WAKE UP EVENT: Pack up the bed!
     bot.on('wake', async () => {
         console.log('[EVENT] Woke up.');
         bot.chat('Morning!');
-
-        // If we placed a bed, let's break it to take it with us
         if (lastBedPosition) {
             const bedBlock = bot.blockAt(lastBedPosition);
             if (bedBlock && bot.isABed(bedBlock)) {
-                console.log('[ACTION] Packing up bed...');
                 try {
                     await bot.tool.equipForBlock(bedBlock);
                     await bot.dig(bedBlock);
-                    lastBedPosition = null; // Forget it
-                } catch (e) {
-                    console.log('[ERROR] Could not pack bed:', e.message);
-                }
+                    lastBedPosition = null; 
+                } catch (e) {}
             }
         }
     });
