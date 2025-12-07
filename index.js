@@ -1,4 +1,4 @@
-// index.js — Human-Like Nomad Bot v5 (Survivor Edition)
+// index.js — Human-Like Nomad Bot v5.1 (Survivor + 1.21 Fix + Nomad Control)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -23,11 +23,12 @@ const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - START_TIME) / 1000);
-    res.send(`Nomad Bot v5 is Running.<br>Uptime: ${uptime}s.<br>Status: ${bot ? 'Connected' : 'Disconnected'}`);
+    res.send(`Nomad Bot v5.1 is Running.<br>Uptime: ${uptime}s.<br>Status: ${bot ? 'Connected' : 'Disconnected'}`);
 });
 
 app.get('/rejoin', (req, res) => {
     res.send("Forcing bot to rejoin server...");
+    console.log('[WEB] Force rejoin triggered.');
     if (bot) bot.end();
     else startBot();
 });
@@ -50,9 +51,12 @@ let isStarting = false;
 let brainInterval = null;
 let lookInterval = null;
 let lastBedPosition = null; 
-let botMode = 'normal'; // 'normal', 'afk', 'pvp_focus'
-let sleepMode = 'auto'; // 'auto', 'force', 'deny'
 let mcData = null;
+
+// SETTINGS & MODES
+let botMode = 'normal'; // 'normal' (Farm/Fight) or 'afk' (Passive)
+let sleepMode = 'auto'; // 'auto', 'force', 'deny'
+let nomadMode = false;  // Default: FALSE (Won't place/break beds unless told to)
 
 // --- 5. The Brain (AI Logic) ---
 function startBrain() {
@@ -72,7 +76,7 @@ function startBrain() {
         if (bot.pathfinder.isMoving()) return; 
 
         // --- PRIORITY 1: SURVIVAL ---
-        await handleAutoEat(); // Eat if hungry
+        await handleAutoEat(); 
 
         // Sleep Logic
         if (sleepMode === 'force' || (sleepMode === 'auto' && !bot.time.isDay)) {
@@ -83,23 +87,22 @@ function startBrain() {
         // --- PRIORITY 2: COMBAT ---
         const nearbyMob = getHostileMob();
         if (nearbyMob && botMode !== 'afk') {
-            // New Advanced Combat Logic
             await handleAdvancedCombat(nearbyMob);
             return;
         }
 
         // --- PRIORITY 3: FARMING & CRAFTING (Normal Mode Only) ---
         if (botMode === 'normal') {
-            // 1. Try to Craft Bread if we have wheat
+            // Craft Bread
             const wheatCount = bot.inventory.count(mcData.itemsByName.wheat.id);
             if (wheatCount >= 3) {
                 const crafted = await craftBread();
-                if (crafted) return; // Busy crafting
+                if (crafted) return; 
             }
 
-            // 2. Try to Farm (Harvest & Replant)
+            // Farm Wheat
             const farmAction = await performFarming();
-            if (farmAction) return; // Busy farming
+            if (farmAction) return; 
         }
 
         // --- PRIORITY 4: IDLE / WANDER ---
@@ -152,40 +155,50 @@ async function handleAdvancedCombat(target) {
         // Chase target
         bot.pathfinder.setGoal(new goals.GoalFollow(target, 2), true);
         
-        // Shield Block Logic: If mob is looking at us and close, block!
+        // Shield Block Logic
         if (shield && dist < 5) {
-            bot.activateItem(true); // Right click (raise shield)
+            bot.activateItem(true); // Raise shield
         } else {
-            bot.deactivateItem(); // Lower shield to run faster
+            bot.deactivateItem(); // Lower shield
         }
     }
 }
 
-// UPGRADE: Farming (Wheat)
+// UPGRADE: Farming (Fixed for 1.21)
 async function performFarming() {
-    // 1. Find Mature Wheat (Age 7)
+    // 1. Find Mature Wheat (Age 7) using Properties
     const wheatBlock = bot.findBlock({
-        matching: (block) => block.name === 'wheat' && block.metadata === 7,
+        matching: (block) => {
+            if (block.name !== 'wheat') return false;
+            // In 1.21, we must check properties, not metadata!
+            const props = block.getProperties();
+            return props && props.age === 7;
+        },
         maxDistance: 20
     });
 
     if (wheatBlock) {
         try {
-            // Go to crop
-            await bot.pathfinder.goto(new goals.GoalBlock(wheatBlock.position.x, wheatBlock.position.y, wheatBlock.position.z));
+            // Move NEAR the block (easier to break)
+            await bot.pathfinder.goto(new goals.GoalNear(wheatBlock.position.x, wheatBlock.position.y, wheatBlock.position.z, 1));
             
             // Break it
             await bot.dig(wheatBlock);
             
-            // Replant Seeds (if we have them)
+            // Wait for drops to exist
+            await bot.waitForTicks(10); 
+
+            // Replant Logic
             const seeds = bot.inventory.items().find(item => item.name.includes('seeds'));
             if (seeds) {
                 await bot.equip(seeds, 'hand');
-                // We need to place it on the farmland (which is under the crop we just broke)
                 const farmland = bot.blockAt(wheatBlock.position.offset(0, -1, 0));
-                await bot.placeBlock(farmland, { x: 0, y: 1, z: 0 });
+                
+                if (farmland && farmland.name === 'farmland') {
+                    await bot.placeBlock(farmland, { x: 0, y: 1, z: 0 });
+                }
             }
-            return true; // We did something
+            return true; 
         } catch (e) {
             console.log("Farming error:", e.message);
         }
@@ -195,15 +208,9 @@ async function performFarming() {
 
 // UPGRADE: Crafting (Bread)
 async function craftBread() {
-    // Find a crafting table nearby
-    const table = bot.findBlock({
-        matching: mcData.blocksByName.crafting_table.id,
-        maxDistance: 32
-    });
-
+    const table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 32 });
     if (!table) return false;
 
-    // Get Recipe
     const recipe = bot.recipesFor(mcData.itemsByName.bread.id, null, 1, table)[0];
     if (!recipe) return false;
 
@@ -212,15 +219,12 @@ async function craftBread() {
         await bot.craft(recipe, 1, table);
         bot.chat("I baked some bread!");
         return true;
-    } catch (e) {
-        console.log("Crafting error:", e.message);
-        return false;
-    }
+    } catch (e) { return false; }
 }
 
 // UPGRADE: Auto Eat
 async function handleAutoEat() {
-    if (bot.food < 16) { // If hunger bars missing > 2
+    if (bot.food < 16) { 
         const food = bot.inventory.items().find(item => item.foodPoints > 0);
         if (food) {
             try {
@@ -231,14 +235,15 @@ async function handleAutoEat() {
     }
 }
 
-// --- 7. Standard Actions (Sleep, Wander) ---
+// --- 7. Standard Actions ---
 
 async function handleSleep() {
     if (sleepMode === 'deny') return;
+
     let bedBlock = bot.findBlock({ matching: bl => bot.isABed(bl), maxDistance: 32 });
     
-    // Only place bed in Normal Mode
-    if (!bedBlock && botMode === 'normal') {
+    // Only place bed if Normal Mode AND Nomad Mode are ON
+    if (!bedBlock && botMode === 'normal' && nomadMode === true) {
         const bedItem = bot.inventory.items().find(item => item.name.includes('bed'));
         if (bedItem) bedBlock = await placeBed(bedItem);
     }
@@ -263,9 +268,8 @@ async function placeBed(bedItem) {
                 const footBlock = bot.blockAt(footPos);
                 if (footBlock.boundingBox !== 'block') continue;
                 
-                // Simple check for space
                 const headPos = footPos.offset(0, 0, 1);
-                if (bot.blockAt(headPos).boundingBox !== 'block') { // rudimentary check
+                if (bot.blockAt(headPos).boundingBox !== 'block') { 
                      try {
                         await bot.equip(bedItem, 'hand');
                         await bot.placeBlock(footBlock, { x: 0, y: 1, z: 0 });
@@ -307,11 +311,37 @@ function handleCommand(username, message) {
     if (config.master && username !== config.master) return;
     const msg = message.toLowerCase();
 
-    if (msg.includes('status')) bot.chat(`Mode: ${botMode} | Sleep: ${sleepMode} | Health: ${Math.round(bot.health)}`);
-    if (msg === 'afk on') { botMode = 'afk'; bot.chat("AFK Mode: I will just chill."); }
-    if (msg === 'afk off') { botMode = 'normal'; bot.chat("Normal Mode: Farming and Fighting enabled."); }
+    // STATUS
+    if (msg.includes('status')) {
+        bot.chat(`Mode: ${botMode} | Sleep: ${sleepMode} | Nomad(Beds): ${nomadMode ? 'ON' : 'OFF'}`);
+    }
+
+    // BEHAVIOR MODES
+    if (msg === 'afk on') { 
+        botMode = 'afk'; 
+        bot.chat("AFK Mode: I will just chill."); 
+    }
+    if (msg === 'afk off') { 
+        botMode = 'normal'; 
+        bot.chat("Normal Mode: Farming and Fighting enabled."); 
+    }
+
+    // NOMAD (Building) MODES
+    if (msg === 'nomad on') {
+        nomadMode = true;
+        bot.chat("Nomad Mode ON: I will place and break beds.");
+    }
+    if (msg === 'nomad off') {
+        nomadMode = false;
+        bot.chat("Nomad Mode OFF: I will only sleep in existing beds.");
+    }
+
+    // SLEEP CONTROLS
     if (msg === 'sleep') { sleepMode = 'force'; handleSleep(); }
     if (msg === 'wakeup') { sleepMode = 'deny'; if(bot.isSleeping) bot.wake(); }
+    if (msg === 'autosleep') { sleepMode = 'auto'; bot.chat("Sleep set to Auto."); }
+
+    // UTILITY
     if (msg === 'drop inv') { 
         bot.inventory.items().forEach(item => bot.tossStack(item)); 
         bot.chat("I dropped everything.");
@@ -360,6 +390,20 @@ function startBot() {
     bot.on('chat', (username, message) => { if (username !== bot.username) handleCommand(username, message); });
     bot.on('whisper', (username, message) => { if (username !== bot.username) handleCommand(username, message); });
     
+    // Wake up event: Only break bed if Nomad Mode is ON
+    bot.on('wake', async () => {
+        if (lastBedPosition && bot.time.isDay && botMode === 'normal' && nomadMode === true) {
+            const bedBlock = bot.blockAt(lastBedPosition);
+            if (bedBlock && bot.isABed(bedBlock)) {
+                try {
+                    await bot.tool.equipForBlock(bedBlock);
+                    await bot.dig(bedBlock);
+                    lastBedPosition = null; 
+                } catch (e) {}
+            }
+        }
+    });
+
     bot.on('kicked', (reason) => { console.log(`[KICKED] ${JSON.stringify(reason)}`); reconnect('kicked'); });
     bot.on('error', (err) => { if(!err.message.includes('PartialReadError')) console.log(`[ERROR] ${err.message}`); reconnect('error'); });
     bot.on('end', () => { console.log('[END] Disconnected.'); reconnect('end'); });
