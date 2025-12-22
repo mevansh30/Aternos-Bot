@@ -40,7 +40,7 @@ const config = {
     port: parseInt(process.env.SERVER_PORT || '53024', 10),
     username: process.env.BOT_USERNAME || 'NomadBot',
     auth: process.env.BOT_AUTH || 'offline',
-    version: '1.21.1',
+    version: '1.21.11',
     master: process.env.BOT_MASTER || null 
 };
 
@@ -398,3 +398,4 @@ function reconnect(reason) {
 }
 
 startBot();
+
