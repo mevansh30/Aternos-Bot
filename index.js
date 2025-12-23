@@ -1,4 +1,4 @@
-// index.js — Human-Like Nomad Bot v7.2 (Fixed for 1.21.1 & Offline Handling)
+// index.js — Nomad Bot v8 (Fixed for Aternos "1.21.11" / Java 1.21.3)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -20,7 +20,7 @@ const PORT = process.env.PORT || 10000;
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - START_TIME) / 1000);
     const status = bot ? 'Online' : 'Offline/Reconnecting';
-    res.send(`Nomad Bot v7.2 is ${status}.<br>Mode: ${botMode}<br>Uptime: ${uptime}s.`);
+    res.send(`Nomad Bot v8 is ${status}.<br>Mode: ${botMode}<br>Uptime: ${uptime}s.`);
 });
 
 app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
@@ -28,14 +28,15 @@ app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
 // --- 3. Configuration ---
 const config = {
     host: 'REALV4NSH.aternos.me',
-    // ⚠️ IMPORTANT: Check this port on Aternos every time you restart the server!
+    // ⚠️ IMPORTANT: Check the Port on Aternos before every start!
     port: 53024, 
     username: 'NomadBot',
     auth: 'offline',
-    
-    // FIX: Bedrock 1.21.11 matches Java 1.21.1
-    // We strictly use 1.21.1 to avoid "Outdated Client" errors.
-    version: '1.21.1', 
+
+    // THE FIX:
+    // Aternos "1.21.11" is a hybrid label. 
+    // 1.21.1 was "Outdated", so the correct Java protocol is 1.21.3.
+    version: '1.21.3', 
     
     master: 'RealV4nsh' 
 };
@@ -65,6 +66,7 @@ function startBrain() {
     brainInterval = setInterval(async () => {
         if (!bot || !bot.entity || isStarting || bot.pathfinder.isMoving() || bot.isSleeping) return;
 
+        // 1. Survival
         if (botMode === 'normal' || botMode === 'farming') {
             await handleAutoEat(); 
             if (sleepMode === 'force' || (sleepMode === 'auto' && canSleep())) {
@@ -73,10 +75,12 @@ function startBrain() {
             }
         }
 
+        // 2. Farming
         if (botMode === 'normal' || botMode === 'farming') {
             if (await performFarming()) return; 
         }
 
+        // 3. Combat/Crafting
         if (botMode === 'normal') {
             const nearbyMob = getHostileMob();
             if (nearbyMob) { await handleAdvancedCombat(nearbyMob); return; }
@@ -85,6 +89,7 @@ function startBrain() {
             if (wheatCount >= 3) await craftBread();
         }
 
+        // 4. Wander
         if (Math.random() < 0.15) wander();
     }, 3000); 
 }
@@ -235,8 +240,8 @@ function startBot() {
             port: config.port,
             username: config.username,
             auth: config.auth,
-            version: config.version, // 1.21.1
-            checkTimeoutInterval: 60000 
+            version: config.version, // Forced 1.21.3
+            checkTimeoutInterval: 60 * 1000 
         });
     } catch (e) {
         reconnect('create_error');
@@ -276,12 +281,10 @@ function startBot() {
         reconnect('kicked'); 
     });
     
-    // Improved Error Handling for ECONNREFUSED
     bot.on('error', (err) => {
-        if (err.code === 'ECONNREFUSED') {
-            console.log(`[SERVER OFFLINE] Could not connect to ${config.host}:${config.port}. Server might be down or port changed.`);
-            // Wait longer (30s) before retrying if server is down
-            setTimeout(startBot, 30000);
+        if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+            console.log(`[SERVER OFFLINE] Could not connect to ${config.host}:${config.port}.`);
+            setTimeout(startBot, 30000); 
             return;
         }
         console.log(`[BOT ERROR] ${err.message}`);
