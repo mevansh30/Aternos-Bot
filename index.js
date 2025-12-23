@@ -1,4 +1,4 @@
-// index.js — Nomad Bot v8 (Fixed for Aternos "1.21.11" / Java 1.21.3)
+// index.js — Nomad Bot v10 (Stable 1.21.4 for ViaVersion)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -10,17 +10,18 @@ const mcdataPkg = require('minecraft-data');
 // --- 1. Global Stability ---
 const START_TIME = Date.now();
 
-process.on('uncaughtException', (err) => console.log('[INTERNAL ERROR]', err.message));
-process.on('unhandledRejection', (reason) => console.log('[INTERNAL ERROR]', reason));
+// Prevent crashes from unhandled errors
+process.on('uncaughtException', (err) => console.log('[INTERNAL ERROR] ' + err.message));
+process.on('unhandledRejection', (reason) => console.log('[INTERNAL ERROR] ' + reason));
 
-// --- 2. Web Server ---
+// --- 2. Web Server (Keep-Alive) ---
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - START_TIME) / 1000);
     const status = bot ? 'Online' : 'Offline/Reconnecting';
-    res.send(`Nomad Bot v8 is ${status}.<br>Mode: ${botMode}<br>Uptime: ${uptime}s.`);
+    res.send(`Nomad Bot v10<br>Status: ${status}<br>Target: 1.21.4 (Requires ViaVersion)<br>Uptime: ${uptime}s`);
 });
 
 app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
@@ -28,17 +29,17 @@ app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
 // --- 3. Configuration ---
 const config = {
     host: 'REALV4NSH.aternos.me',
-    // ⚠️ IMPORTANT: Check the Port on Aternos before every start!
+    // ⚠️ CHECK PORT: This changes every time you start Aternos!
     port: 53024, 
     username: 'NomadBot',
     auth: 'offline',
+    master: 'RealV4nsh',
 
-    // THE FIX:
-    // Aternos "1.21.11" is a hybrid label. 
-    // 1.21.1 was "Outdated", so the correct Java protocol is 1.21.3.
-    version: '1.21.11', 
-    
-    master: 'RealV4nsh' 
+    // EXPLANATION:
+    // 1.21.11 exists but Mineflayer crashes because it's too new.
+    // We force 1.21.4. You MUST install 'ViaVersion' plugin on Aternos
+    // to let this bot join.
+    version: '1.21.4' 
 };
 
 // --- 4. Global Bot State ---
@@ -55,7 +56,9 @@ let nomadMode = false;
 // --- 5. Brain & Logic ---
 function startBrain() {
     stopBrain();
+    console.log(`[BRAIN] AI Logic started.`);
     
+    // Look around human-like
     lookInterval = setInterval(() => {
         if(!bot || !bot.entity || bot.pathfinder.isMoving()) return;
         const yaw = (Math.random() * Math.PI) - (0.5 * Math.PI);
@@ -63,6 +66,7 @@ function startBrain() {
         bot.look(bot.entity.yaw + yaw, pitch);
     }, 4000);
 
+    // Main Loop
     brainInterval = setInterval(async () => {
         if (!bot || !bot.entity || isStarting || bot.pathfinder.isMoving() || bot.isSleeping) return;
 
@@ -80,7 +84,7 @@ function startBrain() {
             if (await performFarming()) return; 
         }
 
-        // 3. Combat/Crafting
+        // 3. Combat
         if (botMode === 'normal') {
             const nearbyMob = getHostileMob();
             if (nearbyMob) { await handleAdvancedCombat(nearbyMob); return; }
@@ -213,11 +217,9 @@ function getHostileMob() {
     return bot.nearestEntity(e => e.type === 'mob' && ['zombie', 'skeleton', 'spider', 'creeper'].includes(e.name));
 }
 
-// --- 7. Commands ---
 function handleCommand(username, message) {
     if (config.master && username !== config.master) return;
     const msg = message.toLowerCase();
-
     if (msg.includes('status')) bot.chat(`Mode: ${botMode.toUpperCase()} | Nomad: ${nomadMode} | Sleep: ${sleepMode}`);
     if (msg === 'afk on') { botMode = 'afk'; updateMovements(); bot.chat("AFK Mode ON"); }
     if (msg === 'afk off' || msg === 'mode normal') { botMode = 'normal'; updateMovements(); bot.chat("Normal Mode ON"); }
@@ -228,11 +230,14 @@ function handleCommand(username, message) {
     if (msg === 'autosleep') { sleepMode = 'auto'; bot.chat("Auto Sleep ON"); }
 }
 
-// --- 8. Lifecycle ---
+// --- 7. Lifecycle ---
+
 function startBot() {
     if (isStarting) return;
     isStarting = true;
-    console.log(`[INIT] Connecting to ${config.host}:${config.port}...`);
+    
+    console.log(`[INIT] Connecting to ${config.host}:${config.port} as ${config.username}...`);
+    console.log(`[INIT] Using version: ${config.version} (Ensuring ViaVersion is on server)`);
 
     try {
         bot = mineflayer.createBot({
@@ -240,11 +245,13 @@ function startBot() {
             port: config.port,
             username: config.username,
             auth: config.auth,
-            version: config.version, // Forced 1.21.3
-            checkTimeoutInterval: 60 * 1000 
+            version: config.version, 
+            checkTimeoutInterval: 60 * 1000
         });
     } catch (e) {
-        reconnect('create_error');
+        console.log(`[FATAL INIT ERROR] ${e.message}`);
+        isStarting = false;
+        reconnect('init_error');
         return;
     }
 
@@ -253,7 +260,7 @@ function startBot() {
     bot.loadPlugin(toolPlugin);
 
     bot.once('spawn', () => {
-        console.log('[SPAWN] Bot online.');
+        console.log(`[SUCCESS] Connected!`);
         isStarting = false;
         mcData = mcdataPkg(bot.version);
         bot.waitForChunksToLoad().then(() => {
@@ -278,13 +285,16 @@ function startBot() {
 
     bot.on('kicked', (reason) => { 
         console.log(`[KICKED] ${JSON.stringify(reason)}`); 
+        if (JSON.stringify(reason).includes("Outdated")) {
+            console.log(">> PLEASE INSTALL 'ViaVersion' PLUGIN ON ATERNOS TO FIX THIS <<");
+        }
         reconnect('kicked'); 
     });
     
     bot.on('error', (err) => {
         if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
-            console.log(`[SERVER OFFLINE] Could not connect to ${config.host}:${config.port}.`);
-            setTimeout(startBot, 30000); 
+            console.log(`[OFFLINE] Server is down. Retrying in 30s...`);
+            setTimeout(() => { isStarting = false; startBot(); }, 30000);
             return;
         }
         console.log(`[BOT ERROR] ${err.message}`);
@@ -302,4 +312,3 @@ function reconnect(reason) {
 }
 
 startBot();
-
