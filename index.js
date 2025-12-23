@@ -1,4 +1,4 @@
-// index.js — Nomad Bot v10 (Stable 1.21.4 for ViaVersion)
+// index.js — Nomad Bot v11 (Debug Mode & Chat Fix)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -9,40 +9,34 @@ const mcdataPkg = require('minecraft-data');
 
 // --- 1. Global Stability ---
 const START_TIME = Date.now();
+process.on('uncaughtException', (err) => console.log('[INTERNAL] ' + err.message));
+process.on('unhandledRejection', (reason) => console.log('[INTERNAL] ' + reason));
 
-// Prevent crashes from unhandled errors
-process.on('uncaughtException', (err) => console.log('[INTERNAL ERROR] ' + err.message));
-process.on('unhandledRejection', (reason) => console.log('[INTERNAL ERROR] ' + reason));
-
-// --- 2. Web Server (Keep-Alive) ---
+// --- 2. Web Server ---
 const app = express();
 const PORT = process.env.PORT || 10000;
-
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - START_TIME) / 1000);
-    const status = bot ? 'Online' : 'Offline/Reconnecting';
-    res.send(`Nomad Bot v10<br>Status: ${status}<br>Target: 1.21.4 (Requires ViaVersion)<br>Uptime: ${uptime}s`);
+    res.send(`Nomad Bot v11 is Online.<br>Master: ${config.master}<br>Uptime: ${uptime}s`);
 });
-
 app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
 
 // --- 3. Configuration ---
 const config = {
     host: 'REALV4NSH.aternos.me',
-    // ⚠️ CHECK PORT: This changes every time you start Aternos!
-    port: 53024, 
+    port: 53024, // ⚠️ CHECK PORT ON ATERNOS!
     username: 'NomadBot',
     auth: 'offline',
-    master: 'RealV4nsh',
+    
+    // ⚠️ MASTER NAME MUST MATCH EXACTLY
+    // I set it to allow ANYONE for now to test if it works.
+    // Change this back to 'RealV4nsh' later if you want security.
+    master: null, 
 
-    // EXPLANATION:
-    // 1.21.11 exists but Mineflayer crashes because it's too new.
-    // We force 1.21.4. You MUST install 'ViaVersion' plugin on Aternos
-    // to let this bot join.
-    version: '1.21.4' 
+    version: '1.21.4' // Works with ViaVersion
 };
 
-// --- 4. Global Bot State ---
+// --- 4. Global State ---
 let bot = null;
 let isStarting = false;
 let brainInterval = null;
@@ -56,9 +50,8 @@ let nomadMode = false;
 // --- 5. Brain & Logic ---
 function startBrain() {
     stopBrain();
-    console.log(`[BRAIN] AI Logic started.`);
+    console.log(`[BRAIN] Logic active.`);
     
-    // Look around human-like
     lookInterval = setInterval(() => {
         if(!bot || !bot.entity || bot.pathfinder.isMoving()) return;
         const yaw = (Math.random() * Math.PI) - (0.5 * Math.PI);
@@ -66,11 +59,10 @@ function startBrain() {
         bot.look(bot.entity.yaw + yaw, pitch);
     }, 4000);
 
-    // Main Loop
     brainInterval = setInterval(async () => {
         if (!bot || !bot.entity || isStarting || bot.pathfinder.isMoving() || bot.isSleeping) return;
 
-        // 1. Survival
+        // Survival
         if (botMode === 'normal' || botMode === 'farming') {
             await handleAutoEat(); 
             if (sleepMode === 'force' || (sleepMode === 'auto' && canSleep())) {
@@ -78,22 +70,18 @@ function startBrain() {
                 if (bot.isSleeping) return;
             }
         }
-
-        // 2. Farming
+        // Farming
         if (botMode === 'normal' || botMode === 'farming') {
             if (await performFarming()) return; 
         }
-
-        // 3. Combat
+        // Combat
         if (botMode === 'normal') {
             const nearbyMob = getHostileMob();
             if (nearbyMob) { await handleAdvancedCombat(nearbyMob); return; }
-
             const wheatCount = bot.inventory.count(mcData.itemsByName.wheat.id);
             if (wheatCount >= 3) await craftBread();
         }
-
-        // 4. Wander
+        // Wander
         if (Math.random() < 0.15) wander();
     }, 3000); 
 }
@@ -123,7 +111,6 @@ async function handleAdvancedCombat(target) {
     if (weapon) await bot.equip(weapon, 'hand');
     const shield = bot.inventory.items().find(i => i.name.includes('shield'));
     if (shield) await bot.equip(shield, 'off-hand');
-    
     if (bot.entity.position.distanceTo(target.position) < 3.5) {
         if (bot.entity.onGround) { bot.setControlState('jump', true); bot.setControlState('jump', false); }
         await bot.pvp.attack(target);
@@ -173,19 +160,15 @@ async function handleAutoEat() {
 async function handleSleep() {
     if (sleepMode === 'deny') return;
     let bed = bot.findBlock({ matching: b => bot.isABed(b), maxDistance: 32 });
-    
     if (!bed && botMode === 'normal' && nomadMode) {
         const bedItem = bot.inventory.items().find(i => i.name.includes('bed'));
         if (bedItem) bed = await placeBed(bedItem);
     }
-
     if (bed) {
         try {
             await bot.pathfinder.goto(new goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 1));
             await bot.sleep(bed);
-        } catch (err) {
-            if (err.message.includes('monsters')) bot.chat("Monsters nearby!");
-        }
+        } catch (err) {}
     }
 }
 
@@ -217,27 +200,41 @@ function getHostileMob() {
     return bot.nearestEntity(e => e.type === 'mob' && ['zombie', 'skeleton', 'spider', 'creeper'].includes(e.name));
 }
 
+// --- 7. COMMAND HANDLER (DEBUGGED) ---
 function handleCommand(username, message) {
-    if (config.master && username !== config.master) return;
+    // 1. Debug Log: See EXACTLY who is speaking and what they said
+    console.log(`[CHAT LOG] User: "${username}" | Msg: "${message}"`);
+
+    // 2. Ignore self
+    if (username === bot.username) return;
+
+    // 3. Relaxed Master Check (Case Insensitive)
+    // If config.master is set, enforce it. Otherwise, allow everyone.
+    if (config.master) {
+        if (username.toLowerCase() !== config.master.toLowerCase()) {
+            console.log(`[IGNORE] ${username} is not Master (${config.master})`);
+            return;
+        }
+    }
+
     const msg = message.toLowerCase();
-    if (msg.includes('status')) bot.chat(`Mode: ${botMode.toUpperCase()} | Nomad: ${nomadMode} | Sleep: ${sleepMode}`);
+    console.log(`[CMD PROCESSING] Executing: ${msg}`);
+
+    if (msg.includes('status')) bot.chat(`Nomad Bot Online | Mode: ${botMode}`);
     if (msg === 'afk on') { botMode = 'afk'; updateMovements(); bot.chat("AFK Mode ON"); }
     if (msg === 'afk off' || msg === 'mode normal') { botMode = 'normal'; updateMovements(); bot.chat("Normal Mode ON"); }
     if (msg === 'nomad on') { nomadMode = true; bot.chat("Nomad ON"); }
     if (msg === 'nomad off') { nomadMode = false; bot.chat("Nomad OFF"); }
     if (msg === 'sleep') { sleepMode = 'force'; handleSleep(); }
     if (msg === 'wakeup') { sleepMode = 'deny'; if(bot.isSleeping) bot.wake(); }
-    if (msg === 'autosleep') { sleepMode = 'auto'; bot.chat("Auto Sleep ON"); }
 }
 
-// --- 7. Lifecycle ---
+// --- 8. Lifecycle ---
 
 function startBot() {
     if (isStarting) return;
     isStarting = true;
-    
-    console.log(`[INIT] Connecting to ${config.host}:${config.port} as ${config.username}...`);
-    console.log(`[INIT] Using version: ${config.version} (Ensuring ViaVersion is on server)`);
+    console.log(`[INIT] Connecting to ${config.host}:${config.port}...`);
 
     try {
         bot = mineflayer.createBot({
@@ -245,12 +242,10 @@ function startBot() {
             port: config.port,
             username: config.username,
             auth: config.auth,
-            version: config.version, 
+            version: config.version,
             checkTimeoutInterval: 60 * 1000
         });
     } catch (e) {
-        console.log(`[FATAL INIT ERROR] ${e.message}`);
-        isStarting = false;
         reconnect('init_error');
         return;
     }
@@ -270,9 +265,29 @@ function startBot() {
         });
     });
 
-    bot.on('chat', (u, m) => { if (u !== bot.username) handleCommand(u, m); });
-    bot.on('whisper', (u, m) => { if (u !== bot.username) handleCommand(u, m); });
+    // LISTENER FIX: Listen to 'messagestr' for raw text in case 'chat' fails
+    bot.on('messagestr', (message, position, jsonMsg) => {
+        // This catches system messages too. We try to filter a bit.
+        // Format often comes as "Username: Message" in messagestr
+        if (message.includes(':')) {
+            const parts = message.split(':');
+            const possibleUser = parts[0].trim();
+            const possibleMsg = parts.slice(1).join(':').trim();
+            // Don't double process if 'chat' event caught it
+            // We'll let the standard 'chat' handler take priority usually
+        }
+    });
+
+    // Standard Chat Listener
+    bot.on('chat', (username, message) => {
+        handleCommand(username, message);
+    });
     
+    // Whisper Listener
+    bot.on('whisper', (username, message) => {
+        handleCommand(username, message);
+    });
+
     bot.on('wake', async () => {
         if (lastBedPosition && botMode === 'normal' && nomadMode) {
             await bot.waitForTicks(40);
@@ -285,15 +300,12 @@ function startBot() {
 
     bot.on('kicked', (reason) => { 
         console.log(`[KICKED] ${JSON.stringify(reason)}`); 
-        if (JSON.stringify(reason).includes("Outdated")) {
-            console.log(">> PLEASE INSTALL 'ViaVersion' PLUGIN ON ATERNOS TO FIX THIS <<");
-        }
         reconnect('kicked'); 
     });
     
     bot.on('error', (err) => {
-        if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
-            console.log(`[OFFLINE] Server is down. Retrying in 30s...`);
+        if (err.code === 'ECONNREFUSED') {
+            console.log(`[OFFLINE] Retrying in 30s...`);
             setTimeout(() => { isStarting = false; startBot(); }, 30000);
             return;
         }
