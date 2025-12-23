@@ -1,4 +1,4 @@
-// index.js — Human-Like Nomad Bot v7.1 (Fixed for Protocol 774 / 1.21.4)
+// index.js — Human-Like Nomad Bot v7.2 (Fixed for 1.21.1 & Offline Handling)
 require('dotenv').config();
 const express = require('express');
 const mineflayer = require('mineflayer');
@@ -10,18 +10,17 @@ const mcdataPkg = require('minecraft-data');
 // --- 1. Global Stability ---
 const START_TIME = Date.now();
 
-// Prevent crashes on small errors
 process.on('uncaughtException', (err) => console.log('[INTERNAL ERROR]', err.message));
 process.on('unhandledRejection', (reason) => console.log('[INTERNAL ERROR]', reason));
 
-// --- 2. Web Server (Keep-Alive) ---
+// --- 2. Web Server ---
 const app = express();
-const PORT = process.env.PORT || 10000; // Render uses port 10000 by default
+const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - START_TIME) / 1000);
     const status = bot ? 'Online' : 'Offline/Reconnecting';
-    res.send(`Nomad Bot v7.1 is ${status}.<br>Mode: ${botMode}<br>Uptime: ${uptime}s.`);
+    res.send(`Nomad Bot v7.2 is ${status}.<br>Mode: ${botMode}<br>Uptime: ${uptime}s.`);
 });
 
 app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
@@ -29,13 +28,14 @@ app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
 // --- 3. Configuration ---
 const config = {
     host: 'REALV4NSH.aternos.me',
-    port: 53024, // WARNING: Verify this port on Aternos!
+    // ⚠️ IMPORTANT: Check this port on Aternos every time you restart the server!
+    port: 53024, 
     username: 'NomadBot',
     auth: 'offline',
     
-    // CRITICAL FIX: Protocol 774 is 1.21.4. 
-    // We hardcode this so the bot knows exactly what to expect.
-    version: '1.21.4', 
+    // FIX: Bedrock 1.21.11 matches Java 1.21.1
+    // We strictly use 1.21.1 to avoid "Outdated Client" errors.
+    version: '1.21.1', 
     
     master: 'RealV4nsh' 
 };
@@ -55,7 +55,6 @@ let nomadMode = false;
 function startBrain() {
     stopBrain();
     
-    // Human-like looking
     lookInterval = setInterval(() => {
         if(!bot || !bot.entity || bot.pathfinder.isMoving()) return;
         const yaw = (Math.random() * Math.PI) - (0.5 * Math.PI);
@@ -63,11 +62,9 @@ function startBrain() {
         bot.look(bot.entity.yaw + yaw, pitch);
     }, 4000);
 
-    // Main Logic Loop
     brainInterval = setInterval(async () => {
         if (!bot || !bot.entity || isStarting || bot.pathfinder.isMoving() || bot.isSleeping) return;
 
-        // 1. Survival (Eat/Sleep)
         if (botMode === 'normal' || botMode === 'farming') {
             await handleAutoEat(); 
             if (sleepMode === 'force' || (sleepMode === 'auto' && canSleep())) {
@@ -76,12 +73,10 @@ function startBrain() {
             }
         }
 
-        // 2. Farming
         if (botMode === 'normal' || botMode === 'farming') {
             if (await performFarming()) return; 
         }
 
-        // 3. Combat & Crafting (Normal Only)
         if (botMode === 'normal') {
             const nearbyMob = getHostileMob();
             if (nearbyMob) { await handleAdvancedCombat(nearbyMob); return; }
@@ -90,7 +85,6 @@ function startBrain() {
             if (wheatCount >= 3) await craftBread();
         }
 
-        // 4. Wander (Anti-AFK)
         if (Math.random() < 0.15) wander();
     }, 3000); 
 }
@@ -193,8 +187,6 @@ async function placeBed(bedItem) {
             const footPos = center.offset(x, 0, z).floored();
             const footBlock = bot.blockAt(footPos);
             if (!footBlock || footBlock.boundingBox !== 'block') continue;
-            
-            // Try to place
             try {
                 await bot.equip(bedItem, 'hand');
                 await bot.placeBlock(footBlock, { x: 0, y: 1, z: 0 });
@@ -243,7 +235,7 @@ function startBot() {
             port: config.port,
             username: config.username,
             auth: config.auth,
-            version: config.version, // 1.21.4
+            version: config.version, // 1.21.1
             checkTimeoutInterval: 60000 
         });
     } catch (e) {
@@ -279,8 +271,22 @@ function startBot() {
         }
     });
 
-    bot.on('kicked', (reason) => { console.log(`[KICKED] ${JSON.stringify(reason)}`); reconnect('kicked'); });
-    bot.on('error', (err) => console.log(`[BOT ERROR] ${err.message}`));
+    bot.on('kicked', (reason) => { 
+        console.log(`[KICKED] ${JSON.stringify(reason)}`); 
+        reconnect('kicked'); 
+    });
+    
+    // Improved Error Handling for ECONNREFUSED
+    bot.on('error', (err) => {
+        if (err.code === 'ECONNREFUSED') {
+            console.log(`[SERVER OFFLINE] Could not connect to ${config.host}:${config.port}. Server might be down or port changed.`);
+            // Wait longer (30s) before retrying if server is down
+            setTimeout(startBot, 30000);
+            return;
+        }
+        console.log(`[BOT ERROR] ${err.message}`);
+    });
+
     bot.on('end', () => { console.log('[END] Disconnected.'); reconnect('end'); });
 }
 
