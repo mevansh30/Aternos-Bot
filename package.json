@@ -1,19 +1,21 @@
 {
-  "name": "mineflayer-bot",
-  "version": "1.0.0",
+  "name": "nomad-bot",
+  "version": "7.0.0",
+  "description": "Minecraft Nomad Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "dotenv": "^16.6.1",
-    "minecraft-protocol": "^1.62.0",
-    "mineflayer": "github:prismarinejs/mineflayer",
-    "mineflayer-pathfinder": "^2.4.5",
-    "mineflayer-pvp": "^1.3.2",
-    "mineflayer-tool": "^1.2.0",
-    "minecraft-data": "^3.101.0",
-    "vec3": "0.1.10",
-    "express": "^4.19.2"
+    "mineflayer": "latest",
+    "mineflayer-pathfinder": "latest",
+    "mineflayer-pvp": "latest",
+    "mineflayer-tool": "latest",
+    "minecraft-data": "latest",
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
