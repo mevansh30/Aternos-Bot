@@ -25,7 +25,7 @@ app.listen(PORT, () => console.log(`[WEB] Listening on port ${PORT}.`));
 const config = {
     host: 'REALV4NSH.aternos.me',
     port: 53024, // ⚠️ CHECK PORT ON ATERNOS!
-    username: 'NomadBot',
+    username: 'NomadBotv8',
     auth: 'offline',
     
     // ⚠️ MASTER NAME MUST MATCH EXACTLY
@@ -324,3 +324,4 @@ function reconnect(reason) {
 }
 
 startBot();
+
