@@ -36,7 +36,7 @@ const config = {
     // THE FIX:
     // Aternos "1.21.11" is a hybrid label. 
     // 1.21.1 was "Outdated", so the correct Java protocol is 1.21.3.
-    version: '1.21.3', 
+    version: '1.21.11', 
     
     master: 'RealV4nsh' 
 };
@@ -302,3 +302,4 @@ function reconnect(reason) {
 }
 
 startBot();
+
